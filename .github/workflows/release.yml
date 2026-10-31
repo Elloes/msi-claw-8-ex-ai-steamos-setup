@@ -1,0 +1,91 @@
+name: Release
+
+permissions:
+  contents: write
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "main"
+      - "dev"
+      - "claw8ex"
+    tags:
+      - "v*.*.*"
+
+jobs:
+  build_plugin:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup latest Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: latest
+
+      - name: Setup PNPM@10
+        uses: pnpm/action-setup@v4
+        with:
+          version: "10.11.0"
+
+      - name: Build frontend from source
+        run: |
+          ./scripts/build_i18n_json.sh
+          ls src/i18n/languages.json
+          pnpm i
+          pnpm run build
+        continue-on-error: true
+
+      - name: Download Decky Plugin CLI
+        run: |
+          mkdir $(pwd)/cli
+          curl -L -o $(pwd)/cli/decky "https://github.com/SteamDeckHomebrew/cli/releases/latest/download/decky-linux-x86_64"
+          chmod +x $(pwd)/cli/decky
+
+      - name: Build plugin
+        run: |
+          $(pwd)/cli/decky plugin build $(pwd)
+          unzip "out/SimpleDeckyTDP-MSI-Claw.zip" -d "out/SimpleDeckyTDP-MSI-Claw"
+          test -s "out/SimpleDeckyTDP-MSI-Claw/SimpleDeckyTDP-MSI-Claw/dist/index.js"
+          mv out/SimpleDeckyTDP-MSI-Claw.zip out/simpledeckytdp-msi-claw.zip
+
+      - name: show files
+        run: |
+          ls out/simpledeckytdp-msi-claw.zip
+          7z l out/simpledeckytdp-msi-claw.zip
+
+      - name: Publish Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SimpleDeckyTDP
+          path: out/simpledeckytdp-msi-claw.zip
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    needs: build_plugin
+    steps:
+      - run: mkdir /tmp/artifacts
+
+      - name: download artifact
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/artifacts
+
+      - run: ls -R /tmp/artifacts
+
+      - name: publish to github release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            /tmp/artifacts/SimpleDeckyTDP/simpledeckytdp-msi-claw.zip
+          tag_name: ${{ github.ref_name }}
+          body: |
+            SimpleDeckyTDP-MSI-Claw: SimpleDeckyTDP for the MSI Claw 8 EX AI+, with Smart CPU boost. See the README for install steps.
+          draft: true
+          generate_release_notes: false
+          prerelease: contains(github.ref, 'pre')
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

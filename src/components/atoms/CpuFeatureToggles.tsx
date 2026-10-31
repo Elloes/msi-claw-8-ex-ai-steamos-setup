@@ -1,0 +1,45 @@
+import { useCpuBoost } from "../../hooks/useCpuBoost";
+import { useEffect } from "react";
+import { DeckyRow, DeckyToggle } from "./DeckyFrontendLib";
+import { useFetchPowerControlInfo } from "../../hooks/useFetchPowerControlInfo";
+import t from '../../i18n/i18n';
+import { CPU_BOOST_POLL_DELAY_MS } from "../../utils/constants";
+import CpuBoostModeSlider from "./CpuBoostModeSlider";
+
+export function CpuFeatureToggles({
+  supportsSmartBoost = false,
+}: {
+  supportsSmartBoost?: boolean;
+}) {
+  const { cpuBoost, setCpuBoost, cpuBoostMode, setCpuBoostMode } =
+    useCpuBoost();
+  const fetchPowerControlInfo = useFetchPowerControlInfo();
+
+  useEffect(() => {
+    setTimeout(() => fetchPowerControlInfo(), CPU_BOOST_POLL_DELAY_MS);
+  }, [cpuBoost, cpuBoostMode]);
+
+  if (supportsSmartBoost) {
+    return (
+      <DeckyRow>
+        <CpuBoostModeSlider
+          cpuBoostMode={cpuBoostMode}
+          setCpuBoostMode={setCpuBoostMode}
+        />
+      </DeckyRow>
+    );
+  }
+
+  return (
+    <DeckyRow>
+      <DeckyToggle
+        label={t('CPU_CONTROLS_ENABLE_BOOST', 'Enable CPU Boost')}
+        checked={cpuBoost}
+        onChange={(enabled: boolean) => {
+          setCpuBoost(enabled);
+        }}
+        highlightOnFocus
+      />
+    </DeckyRow>
+  );
+}

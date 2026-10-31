@@ -1,0 +1,478 @@
+import os
+import decky_plugin
+from plugin_settings import get_nested_setting, get_saved_settings
+from enum import Enum
+from devices import rog_ally, lenovo
+import device_utils
+import ryzenadj
+import charge_limit
+
+from i18n import t
+
+PLATFORM_PROFILE_PATH = '/sys/firmware/acpi/platform_profile'
+
+class AdvancedOptionsType(Enum):
+  BOOLEAN = 'boolean'
+  NUMBER_RANGE = 'number_range'
+
+class DefaultSettings(Enum):
+  ENABLE_TDP_CONTROL = 'enableTdpControl'
+  ENABLE_GPU_CONTROL = 'enableGpuControl'
+  ENABLE_APU_SLOW_LIMIT = 'enableApuSlowLimit'
+  ENABLE_RYZENADJ_UNDERVOLT = 'enableRyzenadjUndervolt'
+  RYZENADJ_UNDERVOLT = 'ryzenadjUndervolt'
+  ENABLE_POWER_CONTROL = 'enablePowercontrol'
+  ENABLE_BACKGROUND_POLLING = 'enableBackgroundPolling'
+  ENABLE_AUTOMATIC_CPU_MANAGEMENT = 'enableAutomaticEppManagement'
+  MAX_TDP_ON_RESUME = 'maxTdpOnResume'
+  MAX_TDP_ON_GAME_PROFILE_CHANGE = 'maxTdpOnGameProfileChange'
+  AC_POWER_PROFILES = 'acPowerProfiles'
+  MAX_TDP_ON_AC_POWER = 'maxTdpOnAcPower'
+  FORCE_DISABLE_TDP_ON_RESUME = 'forceDisableTdpOnResume'
+  FORCE_DISABLE_SUSPEND_ACTIONS = 'forceDisableSuspendActions'
+  ENABLE_CHARGE_LIMIT = 'enableChargeLimit'
+  CHARGE_LIMIT = 'chargeLimit'
+  ENABLE_SIMPLE_EPP_LABELS = 'enableSimpleEppLabels'
+  ENABLE_MAX_TDP_OVERRIDE = 'enableMaxTdpOverride'
+
+class RogAllySettings(Enum):
+  USE_PLATFORM_PROFILE = 'platformProfile'
+  USE_EXTREME_POWERSAVE = 'useExtremePowersave'
+  USE_WMI = 'useWmi'
+
+class LegionGoSettings(Enum):
+  CUSTOM_TDP_MODE = 'lenovoCustomTdpMode'
+
+class SteamDeckSettings(Enum):
+  DECK_CUSTOM_TDP_LIMITS = 'deckCustomTdpLimits'
+  DECK_CUSTOM_GPU_MAX_ENABLED = 'deckCustomGpuMaxEnabled'
+  DECK_CUSTOM_GPU_MAX = 'deckCustomGpuMax'
+
+# e.g. get_setting(LegionGoSettings.CUSTOM_TDP_MODE.value)
+def get_setting(setting_name = ''):
+  return get_nested_setting(f'advanced.{setting_name}')
+
+def get_value(setting, default_value = False):
+  current_val = get_nested_setting(
+    f'advanced.{setting.value}'
+  )
+
+  if isinstance(current_val, bool):
+    return current_val
+  else:
+    return default_value
+
+def get_number_value(setting, default_value):
+  current_val = get_nested_setting(
+    f'advanced.{setting.value}'
+  )
+
+  if isinstance(current_val, int):
+    return current_val
+  else:
+    return default_value
+
+def get_default_options():
+  options = []
+
+  enable_tdp_control = {
+    'name': t('ADVANCED_ENABLE_TDP_CONTROLS', 'Enable TDP Controls'),
+    'type': AdvancedOptionsType.BOOLEAN.value,
+    'defaultValue': True,
+    'description': t('ADVANCED_ENABLE_TDP_CONTROLS_DESC', 'Enables TDP Sliders, and other advanced options'),
+    'currentValue': get_value(DefaultSettings.ENABLE_TDP_CONTROL, True),
+    'statePath': DefaultSettings.ENABLE_TDP_CONTROL.value
+  }
+
+  options.append(enable_tdp_control)
+
+  if not device_utils.is_intel():
+    # GPU controls on AMD only
+    enable_gpu_control = {
+      'name': t('ADVANCED_ENABLE_GPU_CONTROLS', 'Enable GPU Controls'),
+      'type': AdvancedOptionsType.BOOLEAN.value,
+      'defaultValue': True,
+      'description': t('ADVANCED_ENABLE_GPU_CONTROLS_DESC', 'Enables GPU Slider'),
+      'currentValue': get_value(DefaultSettings.ENABLE_GPU_CONTROL, True),
+      'statePath': DefaultSettings.ENABLE_GPU_CONTROL.value
+    }
+
+    options.append(enable_gpu_control)
+
+  manual_cpu_controls = {
+    'name': t('ADVANCED_ENABLE_MANUAL_CPU_CONTROLS', 'Enable manual CPU Controls'),
+    'type': AdvancedOptionsType.BOOLEAN.value,
+    'defaultValue': True,
+    'description': t('ADVANCED_ENABLE_MANUAL_CPU_CONTROLS_DESC', 'Enables manual CPU boost, SMT, Power Governor, and EPP controls'),
+    'currentValue': get_value(DefaultSettings.ENABLE_POWER_CONTROL, True),
+    'statePath': DefaultSettings.ENABLE_POWER_CONTROL.value
+  }
+
+  options.append(manual_cpu_controls)
+
+  if not device_utils.is_intel():
+    simple_epp_labels = {
+      'name': t('ADVANCED_ENABLE_SIMPLE_EPP_LABELS', 'Enable simple Governor + Epp Labels'),
+      'type': AdvancedOptionsType.BOOLEAN.value,
+      'defaultValue': True,
+      'description': t('ADVANCED_ENABLE_SIMPLE_EPP_LABELS_DESC', 'Enables more intuitive labels for EPP and Power Governor'),
+      'currentValue': get_value(DefaultSettings.ENABLE_SIMPLE_EPP_LABELS, True),
+      'statePath': DefaultSettings.ENABLE_SIMPLE_EPP_LABELS.value,
+      'disabled': {
+        'ifFalsy': [DefaultSettings.ENABLE_POWER_CONTROL.value],
+        'hideIfDisabled': True
+      }
+    }
+
+    options.append(simple_epp_labels)
+
+  enable_automatic_cpu_management = {
+    'name': t('ADVANCED_ENABLE_AUTO_CPU_MANAGEMENT', 'Enable Automatic CPU management'),
+    'type': AdvancedOptionsType.BOOLEAN.value,
+    'defaultValue': False,
+    'description': t('ADVANCED_ENABLE_AUTO_CPU_MANAGEMENT_DESC', 'Enables automatic management of CPU Boost, EPP, SMT, and Governor'),
+    'currentValue': get_value(DefaultSettings.ENABLE_AUTOMATIC_CPU_MANAGEMENT, False),
+    'statePath': DefaultSettings.ENABLE_AUTOMATIC_CPU_MANAGEMENT.value,
+    'disabled': {
+      'ifTruthy': [DefaultSettings.ENABLE_POWER_CONTROL.value],
+      'hideIfDisabled': True
+    }
+  }
+
+  options.append(enable_automatic_cpu_management)
+
+  ac_power_profiles = {
+    'name': t('ADVANCED_ENABLE_AC_POWER_PROFILES', 'Enable per-game AC power TDP profiles'),
+    'type': AdvancedOptionsType.BOOLEAN.value,
+    'defaultValue': False,
+    'description': t('ADVANCED_ENABLE_AC_POWER_PROFILES_DESC', 'When plugged into AC power, use a separate per-game TDP profile. Per-game profiles must be enabled'),
+    'currentValue': get_value(DefaultSettings.AC_POWER_PROFILES, False),
+    'statePath': DefaultSettings.AC_POWER_PROFILES.value
+  }
+
+  options.append(ac_power_profiles)
+
+  max_tdp_on_ac_power = {
+    'name': t('MAX_TDP_ON_AC_POWER', 'Always use Max TDP on AC power'),
+    'type': AdvancedOptionsType.BOOLEAN.value,
+    'defaultValue': False,
+    'description': t('MAX_TDP_ON_AC_POWER_DESC', 'When plugged into AC power, always use max TDP. AC power profiles must be enabled'),
+    'currentValue': get_value(DefaultSettings.MAX_TDP_ON_AC_POWER, False),
+    'disabled': {
+      'ifFalsy': [DefaultSettings.AC_POWER_PROFILES.value],
+      'hideIfDisabled': True
+    },
+    'statePath': DefaultSettings.MAX_TDP_ON_AC_POWER.value
+  }
+
+  options.append(max_tdp_on_ac_power)
+
+  # if charge_limit.supports_charge_limit():
+  #   range, default_value, step = charge_limit.get_range_info()
+
+  #   options.append({
+  #     'name': t('ADVANCED_ENABLE_CHARGE_LIMIT', 'Enable Battery Charge Limit'),
+  #     'type': AdvancedOptionsType.BOOLEAN.value,
+  #     'defaultValue': False,
+  #     'currentValue': get_value(DefaultSettings.ENABLE_CHARGE_LIMIT, False),
+  #     'statePath': DefaultSettings.ENABLE_CHARGE_LIMIT.value
+  #   })
+
+  #   set_charge_limit_option = {
+  #     'name': t('ADVANCED_SET_CHARGE_LIMIT', 'Set Battery Charge Limit'),
+  #     'type': AdvancedOptionsType.NUMBER_RANGE.value,
+  #     'range': range,
+  #     'defaultValue': default_value,
+  #     'step': step,
+  #     'valueSuffix': '%',
+  #     'description': t('ADVANCED_SET_CHARGE_LIMIT_DESC', 'Sets max battery limit'),
+  #     'currentValue': get_number_value(DefaultSettings.CHARGE_LIMIT, default_value),
+  #     'statePath': DefaultSettings.CHARGE_LIMIT.value,
+  #     'disabled': {
+  #       'ifFalsy': [DefaultSettings.ENABLE_CHARGE_LIMIT.value],
+  #       'hideIfDisabled': True
+  #     }
+  #   }
+
+  #   options.append(set_charge_limit_option)
+
+  enable_background_polling = {
+    'name': t('ADVANCED_ENABLE_BACKGROUND_POLLING', 'Enable Background Polling'),
+    'type': AdvancedOptionsType.BOOLEAN.value,
+    'defaultValue': True,
+    'description': t('ADVANCED_ENABLE_BACKGROUND_POLLING_DESC', 'Polling will set TDP/GPU/etc every few seconds'),
+    'currentValue': get_value(DefaultSettings.ENABLE_BACKGROUND_POLLING, True),
+    'statePath': DefaultSettings.ENABLE_BACKGROUND_POLLING.value
+  }
+
+  options.append(enable_background_polling)
+
+  force_disable_tdp_on_resume = {
+    'name': t('ADVANCED_FORCE_DISABLE_TDP_ON_RESUME', 'Force Disable Setting TDP on Resume'),
+    'type': AdvancedOptionsType.BOOLEAN.value,
+    'defaultValue': False,
+    'description': t('ADVANCED_FORCE_DISABLE_TDP_ON_RESUME_DESC', 'Disable automatically setting TDP, etc, on resume'),
+    'currentValue': get_value(DefaultSettings.FORCE_DISABLE_TDP_ON_RESUME, False),
+    'statePath': DefaultSettings.FORCE_DISABLE_TDP_ON_RESUME.value,
+    'disabled': {
+      'ifFalsy': [DefaultSettings.ENABLE_TDP_CONTROL.value]
+    }
+  }
+
+  options.append(force_disable_tdp_on_resume)
+
+  force_disable_suspend_actions = {
+    'name': t('ADVANCED_FORCE_DISABLE_SUSPEND_ACTIONS', 'Force Disable Any Suspend actions'),
+    'type': AdvancedOptionsType.BOOLEAN.value,
+    'defaultValue': False,
+    'description': t('ADVANCED_FORCE_DISABLE_SUSPEND_ACTIONS_DESC', 'Disable any suspend-related changes, etc, when you suspend your device'),
+    'currentValue': get_value(DefaultSettings.FORCE_DISABLE_SUSPEND_ACTIONS, False),
+    'statePath': DefaultSettings.FORCE_DISABLE_SUSPEND_ACTIONS.value,
+    'disabled': {
+      'ifFalsy': [DefaultSettings.ENABLE_TDP_CONTROL.value]
+    }
+  }
+
+  options.append(force_disable_suspend_actions)
+
+  max_tdp_on_resume = {
+    'name': t('ADVANCED_MAX_TDP_ON_RESUME', 'Max TDP On Resume'),
+    'type': AdvancedOptionsType.BOOLEAN.value,
+    'defaultValue': True,
+    'description': t('ADVANCED_MAX_TDP_ON_RESUME_DESC', 'When you resume from suspend, temporarily sets TDP to max value for X seconds.'),
+    'currentValue': get_value(DefaultSettings.MAX_TDP_ON_RESUME, True),
+    'statePath': DefaultSettings.MAX_TDP_ON_RESUME.value,
+    'disabled': {
+      'ifFalsy': [DefaultSettings.ENABLE_TDP_CONTROL.value],
+      'ifTruthy': [DefaultSettings.FORCE_DISABLE_TDP_ON_RESUME.value],
+      'hideIfDisabled': True
+    }
+  }
+
+  options.append(max_tdp_on_resume)
+
+
+  if not device_utils.is_intel():
+    # enable apu-slow-limit control
+    enable_apu_slow_limit = {
+      'name': t('ADVANCED_ENABLE_APU_SLOW_LIMIT', 'Enable APU Slow Limit'),
+      'type': AdvancedOptionsType.BOOLEAN.value,
+      'defaultValue': False,
+      'description': t('ADVANCED_ENABLE_APU_SLOW_LIMIT_DESC', 'Enables the --apu-slow-limit value for ryzenadj'),
+      'currentValue': get_value(DefaultSettings.ENABLE_APU_SLOW_LIMIT, False),
+      'statePath': DefaultSettings.ENABLE_APU_SLOW_LIMIT.value,
+      'disabled': {
+          'ifTruthy': [RogAllySettings.USE_WMI.value, LegionGoSettings.CUSTOM_TDP_MODE.value],
+          'hideIfDisabled': True
+      }
+    }
+
+    options.append(enable_apu_slow_limit)
+
+    try:
+      settings = get_saved_settings()
+      if settings.get('supportsRyzenadjCoall', False):
+        enable_ryzenadj_undervolt = {
+          'name': t('ADVANCED_ENABLE_RYZENADJ_UNDERVOLT', '(Experimental) Enable undervolting via ryzenadj'),
+          'type': AdvancedOptionsType.BOOLEAN.value,
+          'defaultValue': False,
+          'description': t('ADVANCED_ENABLE_RYZENADJ_UNDERVOLT_DESC', 'Enables the --set-coall value for ryzenadj'),
+          'currentValue': get_value(DefaultSettings.ENABLE_RYZENADJ_UNDERVOLT, False),
+          'statePath': DefaultSettings.ENABLE_RYZENADJ_UNDERVOLT.value,
+          'disabled': {
+            'ifTruthy': [RogAllySettings.USE_WMI.value, LegionGoSettings.CUSTOM_TDP_MODE.value],
+            'hideIfDisabled': True
+          }
+        }
+
+        options.append(enable_ryzenadj_undervolt)
+
+        ryzenadj_undervolt_slider = {
+          'name': t('ADVANCED_RYZENADJ_UNDERVOLT', 'Ryzenadj undervolt'),
+          'type': AdvancedOptionsType.NUMBER_RANGE.value,
+          'range': [0, 30],
+          'defaultValue': 0,
+          'step': 1,
+          'valueSuffix': '',
+          'description': t('ADVANCED_RYZENADJ_UNDERVOLT_DESC', 'Warning, use carefully. Value for the ryzenadj --set-coall flag'),
+          'currentValue': get_number_value(DefaultSettings.RYZENADJ_UNDERVOLT, 0),
+          'statePath': DefaultSettings.RYZENADJ_UNDERVOLT.value,
+          'disabled': {
+            'ifFalsy': [DefaultSettings.ENABLE_RYZENADJ_UNDERVOLT.value],
+            'hideIfDisabled': True
+          }
+        }
+
+        options.append(ryzenadj_undervolt_slider)
+    except Exception as e:
+      decky_plugin.logger.error(f"{__name__} error while checking for ryzenadj undervolt {e}")
+
+    max_tdp_on_game_profile_change = {
+      'name': t('ADVANCED_TEMP_MAX_TDP_PROFILE', 'Temp Max TDP Profile'),
+      'type': AdvancedOptionsType.NUMBER_RANGE.value,
+      'range': [0, 20],
+      'defaultValue': 0,
+      'step': 1,
+      'valueSuffix': 's',
+      'description': t('ADVANCED_TEMP_MAX_TDP_PROFILE_DESC', 'When you start a game, temporarily sets TDP to max value for X seconds.'),
+      'currentValue': get_number_value(DefaultSettings.MAX_TDP_ON_GAME_PROFILE_CHANGE, 0),
+      'statePath': DefaultSettings.MAX_TDP_ON_GAME_PROFILE_CHANGE.value,
+      'disabled': {
+        'ifFalsy': [DefaultSettings.ENABLE_TDP_CONTROL.value]
+      }
+    }
+
+    options.append(max_tdp_on_game_profile_change)
+
+  return options
+
+
+def get_advanced_options():
+  options = get_default_options()
+
+  if device_utils.is_legion_go() and lenovo.supports_wmi_tdp():
+    options.append({
+      'name': t('ADVANCED_LENOVO_CUSTOM_TDP_MODE', 'Lenovo Custom TDP Mode'),
+      'type': AdvancedOptionsType.BOOLEAN.value,
+      'description': t('ADVANCED_LENOVO_CUSTOM_TDP_MODE_DESC', 'Use WMI for TDP control.'),
+      'defaultValue': True,
+      'currentValue': get_value(LegionGoSettings.CUSTOM_TDP_MODE, True),
+      'statePath': LegionGoSettings.CUSTOM_TDP_MODE.value,
+      'disabled': {
+        'ifFalsy': [DefaultSettings.ENABLE_TDP_CONTROL.value]
+      }
+    })
+  if device_utils.is_rog_ally() or device_utils.is_rog_ally_x():
+    rog_ally_advanced_options(options)
+  if device_utils.is_steam_deck():
+    steam_deck_advanced_options(options)
+
+  if not device_utils.is_intel():
+    default_force_tdp = False
+
+    if device_utils.is_amd_strix_halo():
+      default_force_tdp = True
+
+    options.append({
+      'name': t('ADVANCED_FORCE_OVERRIDE_MAX_TDP', '(DANGER) Force Override Max TDP limit'),
+      'type': AdvancedOptionsType.BOOLEAN.value,
+      'description': t('ADVANCED_FORCE_OVERRIDE_MAX_TDP_DESC', 'Warning, only use this if you know what you are doing. Sets 120W max TDP limit'),
+      'defaultValue': default_force_tdp,
+      'currentValue': get_value(DefaultSettings.ENABLE_MAX_TDP_OVERRIDE, default_force_tdp),
+      'statePath': DefaultSettings.ENABLE_MAX_TDP_OVERRIDE.value,
+      'disabled': {
+        'ifFalsy': [DefaultSettings.ENABLE_TDP_CONTROL.value],
+        'hideIfDisabled': True
+      }
+    })
+
+  return options
+
+def steam_deck_advanced_options(options):
+  options.append({
+    'name': t('ADVANCED_DECK_ENABLE_TDP_ADJUSTMENT', 'Enable TDP slider min/max adjustment'),
+    'type': AdvancedOptionsType.BOOLEAN.value,
+    'description': t('ADVANCED_DECK_ENABLE_TDP_ADJUSTMENT_DESC', 'Warning, this needs a custom bios on the Steam Deck'),
+    'defaultValue': False,
+    'currentValue': get_value(SteamDeckSettings.DECK_CUSTOM_TDP_LIMITS, False),
+    'statePath': SteamDeckSettings.DECK_CUSTOM_TDP_LIMITS.value,
+    'disabled': {
+      'ifFalsy': [DefaultSettings.ENABLE_TDP_CONTROL.value],
+      "hideIfDisabled": True
+    }
+  })
+
+  enable_deck_custom_gpu_clock = {
+    'name': t('ADVANCED_DECK_ENABLE_CUSTOM_GPU_CLOCK', 'Enable custom GPU Max Clock'),
+    'type': AdvancedOptionsType.BOOLEAN.value,
+    'defaultValue': False,
+    'description': t('ADVANCED_DECK_ENABLE_CUSTOM_GPU_CLOCK_DESC', 'Warning, this needs a custom bios on the Steam Deck'),
+    'currentValue': get_value(SteamDeckSettings.DECK_CUSTOM_GPU_MAX_ENABLED, False),
+    'statePath': SteamDeckSettings.DECK_CUSTOM_GPU_MAX_ENABLED.value,
+    'disabled': {
+      'ifFalsy': [DefaultSettings.ENABLE_GPU_CONTROL.value],
+      'hideIfDisabled': True
+    }
+  }
+
+  options.append(enable_deck_custom_gpu_clock)
+
+  custom_gpu_clock = {
+    'name': t('ADVANCED_DECK_CUSTOM_GPU_CLOCK', 'Custom GPU Max Clock'),
+    'type': AdvancedOptionsType.NUMBER_RANGE.value,
+    'range': [1600, 2200],
+    'defaultValue': 1600,
+    'step': 50,
+    'valueSuffix': 'MHz',
+    'description': t('ADVANCED_DECK_CUSTOM_GPU_CLOCK_DESC', 'Requires Custom Bios'),
+    'currentValue': get_number_value(SteamDeckSettings.DECK_CUSTOM_GPU_MAX, 1600),
+    'statePath': SteamDeckSettings.DECK_CUSTOM_GPU_MAX.value,
+    'disabled': {
+      'ifFalsy': [SteamDeckSettings.DECK_CUSTOM_GPU_MAX_ENABLED.value],
+      'hideIfDisabled': True
+    }
+  }
+
+  options.append(custom_gpu_clock)
+
+def rog_ally_advanced_options(options):
+  if os.path.exists(PLATFORM_PROFILE_PATH):
+    options.append({
+      'name': t('ADVANCED_ASUS_PLATFORM_PROFILE', 'Enable Asus Platform Profile management'),
+      'type': AdvancedOptionsType.BOOLEAN.value,
+      'defaultValue': True,
+      'currentValue': get_value(RogAllySettings.USE_PLATFORM_PROFILE, True),
+      'statePath': RogAllySettings.USE_PLATFORM_PROFILE.value,
+      'uiShouldHideField': {
+        'ifFalsy': [DefaultSettings.ENABLE_TDP_CONTROL.value]
+      }
+    })
+  if rog_ally.supports_mcu_powersave():
+    options.append({
+      'name': t('ADVANCED_ASUS_EXTREME_POWERSAVE', 'Enable Asus extreme Powersave'),
+      'description': t('ADVANCED_ASUS_EXTREME_POWERSAVE_DESC', 'Reduces power consumption during suspend. WARNING, this requires updated MCU firmware and updated Asus-Linux kernel modules'),
+      'type': AdvancedOptionsType.BOOLEAN.value,
+      'defaultValue': True,
+      'currentValue': get_value(RogAllySettings.USE_EXTREME_POWERSAVE, True),
+      'statePath': RogAllySettings.USE_EXTREME_POWERSAVE.value,
+    })
+  if rog_ally.supports_wmi_tdp():
+    options.append({
+      'name': t('ADVANCED_ASUS_USE_WMI', 'Use Asus WMI for TDP'),
+      'type': AdvancedOptionsType.BOOLEAN.value,
+      'description': t('ADVANCED_ASUS_USE_WMI_DESC', 'Use Asus WMI calls instead of ryzenadj'),
+      'defaultValue': True,
+      'currentValue': get_value(RogAllySettings.USE_WMI, True),
+      'statePath': RogAllySettings.USE_WMI.value,
+      'uiShouldHideField': {
+        'ifFalsy': [DefaultSettings.ENABLE_TDP_CONTROL.value]
+      }
+    })
+
+def tdp_control_enabled():
+  return get_setting(DefaultSettings.ENABLE_TDP_CONTROL.value)
+
+def gpu_control_enabled():
+  return get_setting(DefaultSettings.ENABLE_GPU_CONTROL.value)
+
+def handle_advanced_option_change(new_values):
+  if device_utils.is_rog_ally() or device_utils.is_rog_ally_x():
+    if rog_ally.supports_mcu_powersave():
+      powersave_enabled = new_values.get(RogAllySettings.USE_EXTREME_POWERSAVE.value, None)
+
+      if isinstance(powersave_enabled, bool):
+        rog_ally.set_mcu_powersave(powersave_enabled)
+    if charge_limit.supports_charge_limit():
+      new_charge_limit = new_values.get(DefaultSettings.CHARGE_LIMIT.value, None)
+      if (isinstance(new_charge_limit, int)
+        and new_charge_limit >= charge_limit.charge_limit_min()
+        and new_charge_limit != charge_limit.get_current_charge_limit()
+      ):
+        charge_limit.set_charge_limit(new_charge_limit)
+
+  new_undervolt_value = new_values.get(DefaultSettings.RYZENADJ_UNDERVOLT.value, 0)
+  if (
+      new_values.get(DefaultSettings.ENABLE_RYZENADJ_UNDERVOLT.value, False)
+      and new_undervolt_value >= 0
+    ):
+    ryzenadj._set_ryzenadj_undervolt(new_undervolt_value)

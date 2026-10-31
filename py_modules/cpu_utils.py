@@ -1,0 +1,510 @@
+from enum import Enum
+import os
+import subprocess
+import decky_plugin
+import plugin_timeout
+import advanced_options
+from time import sleep
+from advanced_options import LegionGoSettings, RogAllySettings
+from devices import lenovo, rog_ally, steam_deck
+from plugin_settings import set_setting, get_saved_settings
+import device_utils
+import ryzenadj
+
+AMD_PSTATE_PATH="/sys/devices/system/cpu/amd_pstate/status"
+AMD_LEGACY_CPU_BOOST_PATH = "/sys/devices/system/cpu/cpufreq/boost"
+
+INTEL_PSTATE_PATH="/sys/devices/system/cpu/intel_pstate/status"
+INTEL_CPU_BOOST_PATH = '/sys/devices/system/cpu/intel_pstate/no_turbo'
+
+SMT_PATH= "/sys/devices/system/cpu/smt/control"
+
+INTEL_TDP_PATH = None
+INTEL_TDP_PREFIX="/sys/devices/virtual/powercap/intel-rapl-mmio/intel-rapl-mmio:0"
+INTEL_LEGACY_TDP_PREFIX="/sys/devices/virtual/powercap/intel-rapl/intel-rapl:0"
+
+INTEL_MAX_TDP_SETTING = 'INTEL_MAX_TDP_SETTING'
+
+# arbitrary values can be set on Intel devices, likely a bug in intel-rapl
+# as a safety mitigation, 40W is the generic ceiling for Intel PC handhelds.
+INTEL_MAX_TDP = 40
+
+# MSI Claw 8 EX AI+ (Panther Lake / Arc B390 "Xe3", model CG3EM).
+# The firmware exposes an 8-35 W sustained envelope. PL1 is the sustained
+# limit (firmware default ~25 W) and PL2 the short burst limit (37 W).
+# Do NOT widen this to the 10-40 W / 80 W PL2 envelope used by other
+# Panther Lake handhelds: the Claw's cooling and EC are sized for 35 W.
+MSI_CLAW_MIN_TDP = 8
+MSI_CLAW_MAX_TDP = 35
+MSI_CLAW_PL1_W = 25
+MSI_CLAW_PL2_W = 37
+
+# sysfs intel-rapl power limits are in microwatts (path suffix `_uw`)
+MICROWATTS_PER_WATT = 1_000_000
+
+class ScalingDrivers(Enum):
+  INTEL_CPUFREQ = "intel_cpufreq"
+  INTEL_PSTATE = "intel_pstate"
+  PSTATE_EPP = "amd-pstate-epp"
+  PSTATE = "amd-pstate"
+  ACPI_CPUFREQ = "acpi-cpufreq"
+
+def use_legacy_intel_tdp():
+
+  if os.path.exists(INTEL_TDP_PREFIX):
+    return False
+  elif os.path.exists(INTEL_LEGACY_TDP_PREFIX):
+    return True
+
+  decky_plugin.logger.info("Warning: /sys endpoint for intel tdp not found")
+  return False
+
+def intel_tdp_path():
+  global INTEL_TDP_PATH
+
+  if INTEL_TDP_PATH:
+    return INTEL_TDP_PATH
+
+  if use_legacy_intel_tdp():
+    INTEL_TDP_PATH = f'{INTEL_LEGACY_TDP_PREFIX}/constraint_*_power_limit_uw'
+  else:
+    INTEL_TDP_PATH = f'{INTEL_TDP_PREFIX}/constraint_*_power_limit_uw'
+
+  return INTEL_TDP_PATH
+
+def set_tdp(tdp: int):
+  if not advanced_options.tdp_control_enabled():
+    return
+
+  # Keep every write inside the device's safe envelope. On the MSI Claw 8 EX AI+
+  # this is 8-35 W; other devices keep their previous behaviour.
+  tdp = clamp_tdp_for_device(tdp)
+  if tdp is None:
+    return
+
+  if device_utils.is_steam_deck():
+    return steam_deck.set_tdp(tdp)
+
+  if device_utils.is_intel():
+    tdp_path = intel_tdp_path()
+
+    if not tdp_path:
+      # TDP not supported on this intel chipset, no known path to set TDP
+      decky_plugin.logger.info("No Known Path for to set TDP on this Intel chipset")
+      return
+
+    return execute_tdp_command(tdp, tdp_path)
+  else:
+    return set_amd_tdp(tdp)
+
+def set_amd_tdp(tdp: int):
+  try:
+    with plugin_timeout.time_limit(4):
+      if (
+        device_utils.is_legion_go()
+        and advanced_options.get_setting(
+          LegionGoSettings.CUSTOM_TDP_MODE.value
+        )
+        and lenovo.supports_wmi_tdp()
+      ):
+        result = lenovo.set_tdp(tdp)
+        if not result:
+          decky_plugin.logger.error(f"{__name__} Lenovo WMI TDP failed, not falling back to ryzenadj")
+        return result
+      elif device_utils.is_rog_ally() or device_utils.is_rog_ally_x():
+        if advanced_options.get_setting(RogAllySettings.USE_PLATFORM_PROFILE.value):
+          rog_ally.set_platform_profile(tdp)
+        if advanced_options.get_setting(RogAllySettings.USE_WMI.value) and rog_ally.supports_wmi_tdp():
+          return rog_ally.set_tdp(tdp)
+
+    # use ryzenadj by default (only for non-WMI devices)
+    return ryzenadj.set_tdp(tdp)
+  except Exception as e:
+    decky_plugin.logger.error(e)
+
+def get_cpb_boost_paths():
+  cpu_nums = get_online_cpus()
+
+  cpb_cpu_boost_paths = list(map(
+    lambda cpu_num: f'/sys/devices/system/cpu/cpufreq/policy{cpu_num}/boost',
+    cpu_nums
+  ))
+
+  return cpb_cpu_boost_paths
+
+def set_cpb_boost(enabled):
+  if device_utils.is_intel():
+    if os.path.exists(INTEL_CPU_BOOST_PATH):
+      try:
+        with open(INTEL_CPU_BOOST_PATH, 'w') as file:
+          # sys endpoint is named 'no_turbo'
+          # so no_turbo == 0 == cpu boost on
+          # no_turbo == 1 == cpu boost off
+          file.write("0" if enabled else "1")
+          file.close()
+          sleep(0.1)
+      except Exception as e:
+        decky_plugin.logger.error(e)
+  else:
+    # AMD CPU boost global cpb boost toggle doesn't exist, set it per-cpu
+    paths = get_cpb_boost_paths()
+    if len(paths) > 0 and os.path.exists(paths[0]):
+      try:
+        with plugin_timeout.time_limit(4):
+          for p in paths:
+            try:
+              with open(p, 'w') as file:
+                file.write("1" if enabled else "0")
+                file.close()
+                sleep(0.1)
+            except Exception as e:
+              decky_plugin.logger.error(e)
+              continue
+      except Exception as e:
+        decky_plugin.logger.error(e)
+    else:
+      # fallback to legacy cpu boost
+      set_cpu_boost(enabled)
+
+def supports_cpu_boost():
+  try:
+    with plugin_timeout.time_limit(4):
+      cpu_boost_paths = get_cpb_boost_paths()
+      if len(cpu_boost_paths) > 0 and os.path.exists(cpu_boost_paths[0]):
+        return True
+      if os.path.exists(AMD_LEGACY_CPU_BOOST_PATH):
+        return True
+      if os.path.exists(INTEL_CPU_BOOST_PATH):
+        return True
+  except Exception as e:
+    decky_plugin.logger.error(e)
+
+  return False
+
+def set_cpu_boost(enabled = True):
+  try:
+    with plugin_timeout.time_limit(3):
+      if os.path.exists(AMD_LEGACY_CPU_BOOST_PATH):
+        with open(AMD_LEGACY_CPU_BOOST_PATH, 'w') as file:
+          if enabled:
+            file.write('1')
+          else:
+            file.write('0')
+          file.close()
+  except Exception as e:
+    decky_plugin.logger.error(e)
+    return False
+
+def supports_smt():
+  try:
+    if os.path.exists(SMT_PATH):
+      with open(SMT_PATH, 'r') as file:
+        state = file.read().strip()
+      # 'notsupported' / 'notimplemented' / 'forceoff' cannot be toggled
+      return state in ('on', 'off')
+  except Exception as e:
+    decky_plugin.logger.error(e)
+
+  return False
+
+def set_smt(enabled = True):
+  try:
+    # SMT_PATH is identical for both AMD and Intel
+    if os.path.exists(SMT_PATH):
+      with open(SMT_PATH, 'r') as file:
+        state = file.read().strip()
+      # skip when SMT can't be toggled (CPUs without HyperThreading report
+      # 'notsupported'/'notimplemented'/'forceoff' and the kernel returns
+      # -ENODEV/-EPERM on write)
+      if state not in ('on', 'off'):
+        return True
+      with open(SMT_PATH, 'w') as file:
+        if enabled:
+          file.write('on')
+        else:
+          file.write('off')
+        file.close()
+
+    return True
+  except Exception as e:
+    decky_plugin.logger.error(e)
+    return False
+
+def get_pstate_status():
+  try:
+    if os.path.exists(AMD_PSTATE_PATH):
+      with open(AMD_PSTATE_PATH, 'r') as file:
+        pstate = file.read()
+        file.close()
+        return pstate.strip()
+    if os.path.exists(INTEL_PSTATE_PATH):
+      with open(INTEL_PSTATE_PATH, 'r') as file:
+        pstate = file.read()
+        file.close()
+        return pstate.strip()
+  except Exception as e:
+    decky_plugin.logger.error(f'{__name__} get_pstate_status {e}')
+    return False
+  return None
+
+def set_pstate_active():
+  if os.path.exists(AMD_PSTATE_PATH):
+    with open(AMD_PSTATE_PATH, 'w') as file:
+      file.write('active')
+      file.close()
+  if os.path.exists(INTEL_PSTATE_PATH):
+    with open(INTEL_PSTATE_PATH, 'w') as file:
+      file.write('active')
+      file.close()
+
+def get_online_cpus():
+  try:
+    with open('/sys/devices/system/cpu/online', 'r') as file:
+      online_cpus = file.read().strip()
+      file.close()
+      # example online_cpus:
+      # 0-2,3,4,5,6-8,10
+      # 0-15
+      # 0-1,3-15
+      parts = online_cpus.split(',')
+
+      result = []
+      for part in parts:
+        if '-' in part:
+          # Handle range
+          start, end = map(int, part.split('-'))
+          result.extend(range(start, end + 1))
+        else:
+          # Handle single value
+          result.append(int(part))
+      return result
+  except Exception as e:
+    decky_plugin.logger.error(f'{__name__} error while getting online_cpus {e}')
+
+  # cpu 0 is always online
+  return [0]
+
+
+def get_epp_paths():
+  cpu_nums = get_online_cpus()
+
+  epp_paths = list(map(
+    lambda cpu_num: f'/sys/devices/system/cpu/cpu{cpu_num}/cpufreq/energy_performance_preference',
+    cpu_nums
+  ))
+
+  return epp_paths
+
+def get_epp_option_paths():
+  cpu_nums = get_online_cpus()
+
+  epp_options_paths = list(map(
+    lambda cpu_num: f'/sys/devices/system/cpu/cpu{cpu_num}/cpufreq/energy_performance_available_preferences',
+    cpu_nums
+  ))
+
+  return epp_options_paths
+
+def get_power_governor_paths():
+  cpu_nums = get_online_cpus()
+
+  power_governor_paths = list(map(
+    lambda cpu_num: f'/sys/devices/system/cpu/cpu{cpu_num}/cpufreq/scaling_governor',
+    cpu_nums
+  ))
+
+  return power_governor_paths
+
+def get_power_governor_option_paths():
+  cpu_nums = get_online_cpus()
+
+  power_governor_option_paths = list(map(
+    lambda cpu_num: f'/sys/devices/system/cpu/cpu{cpu_num}/cpufreq/scaling_available_governors',
+    cpu_nums
+  ))
+
+  return power_governor_option_paths
+
+def get_scaling_driver_devices():
+  cpu_nums = get_online_cpus()
+
+  scaling_driver_paths = list(map(
+    lambda cpu_num: f'/sys/devices/system/cpu/cpufreq/policy{cpu_num}/scaling_driver',
+    cpu_nums
+  ))
+
+  return scaling_driver_paths
+
+def get_scaling_driver():
+  SCALING_DRIVER_DEVICES = get_scaling_driver_devices()
+  try:
+    with plugin_timeout.time_limit(1):
+      if os.path.exists(SCALING_DRIVER_DEVICES[0]):
+        with open(SCALING_DRIVER_DEVICES[0], 'r') as file:
+          scaling_driver = file.read().strip()
+          file.close()
+          return scaling_driver
+  except Exception as e:
+    decky_plugin.logger.error(f'{__name__} get_scaling_driver {e}')
+    return ''
+
+def get_intel_tdp_limits():
+  # while there is a max TDP provided by intel, there is no min
+  min_tdp = 3
+  max_tdp = 15
+
+  saved_max_tdp = get_saved_settings().get(INTEL_MAX_TDP_SETTING, None)
+
+  if saved_max_tdp:
+    max_tdp = saved_max_tdp
+  else:
+    max_tdp = get_intel_max_tdp()
+
+  if device_utils.is_msi_claw_8_ex_ai():
+    # MSI Claw 8 EX AI+: fixed 8-35 W firmware envelope. The saved value is
+    # ignored here on purpose: a value saved on another device (up to 40 W)
+    # must never widen the slider past what the Claw's EC allows.
+    return [MSI_CLAW_MIN_TDP, MSI_CLAW_MAX_TDP]
+
+  return [min_tdp, max_tdp]
+
+def clamp_tdp_for_device(tdp):
+  """Clamp a requested TDP to the device's safe envelope."""
+  try:
+    requested = int(tdp)
+  except (TypeError, ValueError):
+    return None
+
+  if device_utils.is_msi_claw_8_ex_ai():
+    return max(MSI_CLAW_MIN_TDP, min(MSI_CLAW_MAX_TDP, requested))
+
+  return requested
+
+def get_default_tdp_range():
+  # Firmware-declared TDP range for the main slider on non-Intel devices.
+  # Lenovo Legion exposes WMI ppt min/max (e.g. Legion Go 2 = [5, 35]).
+  # Returns None when no device-specific range is known, so the frontend
+  # falls back to its default.
+  try:
+    if lenovo.supports_wmi_tdp():
+      min_tdp, max_tdp = lenovo.get_tdp_limit(lenovo.STAPM_SUFFIX)
+      if isinstance(min_tdp, int) and isinstance(max_tdp, int):
+        return [min_tdp, max_tdp]
+  except Exception as e:
+    decky_plugin.logger.error(f'{__name__} error: {e}')
+
+  return None
+
+def get_intel_max_tdp():
+  tdp_prefix = INTEL_LEGACY_TDP_PREFIX if use_legacy_intel_tdp() else INTEL_TDP_PREFIX
+
+  MAX_TDP_PATH = f'{tdp_prefix}/constraint_0_max_power_uw'
+  ALTERNATIVE_MAX_TDP_PATH = f'{tdp_prefix}/constraint_0_power_limit_uw'
+
+  maximum_tdp = 15
+
+  try:
+    with plugin_timeout.time_limit(1):
+      max_tdp = 0
+      alt_max_tdp = 0
+
+      if os.path.exists(MAX_TDP_PATH):
+        with open(MAX_TDP_PATH, 'r') as file:
+          max_tdp = int(file.read().strip()) / MICROWATTS_PER_WATT
+          file.close()
+      if os.path.exists(ALTERNATIVE_MAX_TDP_PATH):
+        with open(ALTERNATIVE_MAX_TDP_PATH, 'r') as file:
+          alt_max_tdp = int(file.read().strip()) / MICROWATTS_PER_WATT
+          file.close()
+
+      if alt_max_tdp >= max_tdp:
+        maximum_tdp = alt_max_tdp
+      else:
+        maximum_tdp = max_tdp
+  except Exception as e:
+    decky_plugin.logger.error(f'{__name__} error: get_intel_max_tdp {e}')
+
+  if maximum_tdp > INTEL_MAX_TDP:
+    maximum_tdp = INTEL_MAX_TDP
+
+  set_setting(INTEL_MAX_TDP_SETTING, maximum_tdp)
+
+  return maximum_tdp
+
+# ---------------------------------------------------------------------------
+# MSI Claw 8 EX AI+ power limits (Panther Lake / Arc B390 "Xe3", CG3EM)
+# ---------------------------------------------------------------------------
+# The kernel exposes two RAPL domains on this platform:
+#   * intel-rapl-mmio  -> what the BIOS/EC and SteamOS' power daemons watch
+#   * intel-rapl (MSR) -> what the GPU power management actually obeys
+# Tools that only write the MMIO domain leave the MSR PL1 at the firmware
+# default, so the CPU follows the requested TDP while the iGPU keeps its own.
+# The "TDP sync" fix in the original Panther Lake fix pack wrote both. This
+# port does the same thing inside the plugin so a plain plugin install gets
+# consistent CPU+GPU limits without a separate service.
+#
+# PL1 = sustained limit  -> the TDP the user picks on the slider (8-35 W)
+# PL2 = short burst limit -> pinned to 37 W, the Claw's firmware burst value.
+# Only constraint 0 and 1 are touched; time windows are left at firmware values.
+MSI_MMIO_PL1_PATH = f'{INTEL_TDP_PREFIX}/constraint_0_power_limit_uw'
+MSI_MMIO_PL2_PATH = f'{INTEL_TDP_PREFIX}/constraint_1_power_limit_uw'
+MSI_MSR_PL1_PATH = f'{INTEL_LEGACY_TDP_PREFIX}/constraint_0_power_limit_uw'
+MSI_MSR_PL2_PATH = f'{INTEL_LEGACY_TDP_PREFIX}/constraint_1_power_limit_uw'
+
+def write_sysfs_int(path, value):
+  """Write an integer to a sysfs file. Returns True on success."""
+  try:
+    if not os.path.exists(path):
+      return False
+    with open(path, 'w') as file:
+      file.write(str(int(value)))
+    return True
+  except Exception as e:
+    decky_plugin.logger.error(f'{__name__} write_sysfs_int {path}: {e}')
+    return False
+
+def set_msi_power_limits(tdp):
+  """Apply the MSI Claw 8 EX AI+ PL1/PL2 envelope to both RAPL domains.
+
+  Returns True when at least the MMIO PL1 write succeeded. The MSR writes are
+  best effort: some SteamOS builds mount intel-rapl read-only for non-root
+  helpers, and the plugin still works with MMIO only in that case.
+  """
+  tdp = clamp_tdp_for_device(tdp)
+  if tdp is None:
+    return False
+
+  pl1_uw = tdp * MICROWATTS_PER_WATT
+  # PL2 must never be lower than PL1, otherwise the EC clamps PL1 down.
+  pl2_uw = max(MSI_CLAW_PL2_W, tdp) * MICROWATTS_PER_WATT
+
+  mmio_ok = write_sysfs_int(MSI_MMIO_PL1_PATH, pl1_uw)
+  # "TDP sync": mirror PL1 into the MSR domain so the iGPU obeys it too.
+  write_sysfs_int(MSI_MSR_PL1_PATH, pl1_uw)
+  write_sysfs_int(MSI_MMIO_PL2_PATH, pl2_uw)
+  write_sysfs_int(MSI_MSR_PL2_PATH, pl2_uw)
+
+  return mmio_ok
+
+def execute_tdp_command(tdp, tdp_path):
+  if device_utils.is_msi_claw_8_ex_ai():
+    return set_msi_power_limits(tdp)
+
+  tdp_microwatts = tdp * MICROWATTS_PER_WATT
+  try:
+    if os.path.exists(tdp_path):
+      with open(tdp_path, 'w') as file:
+        # str() is required: file.write() rejects ints. The previous fork
+        # passed an int here, which only worked because the glob path never
+        # exists and the subprocess fallback below was always taken.
+        file.write(str(tdp_microwatts))
+        file.close()
+    else:
+      # fallback to tdp via subprocess
+      env = os.environ.copy()
+      env["LD_LIBRARY_PATH"] = ""
+      cmd = f"echo '{tdp_microwatts}' | tee {tdp_path}"
+      result = subprocess.run(cmd, shell=True, check=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+      return result
+  except Exception as e:
+    decky_plugin.logger.error(f'{__name__} Error: execute_tdp_command {e}')

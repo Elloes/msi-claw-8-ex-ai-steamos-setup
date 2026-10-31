@@ -1,0 +1,15 @@
+name: Add a Language Translation
+description: Contribute a language translation
+body:
+  - type: textarea
+    attributes:
+      label: System Language
+      description: You can find this in the SimpleDeckyTDP Plugin's UI, see https://github.com/aarron-lee/SimpleDeckyTDP/blob/main/documentation/system_language.png
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Translations
+      description: Translations of all terms, see example https://github.com/aarron-lee/SimpleDeckyTDP/blob/main/defaults/i18n/template.json
+    validations:
+      required: true

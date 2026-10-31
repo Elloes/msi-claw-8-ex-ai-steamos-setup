@@ -1,0 +1,314 @@
+import ac_power
+import decky_plugin
+import plugin_update
+import time
+import plugin_timeout
+import advanced_options
+import power_utils
+import cpu_utils
+import smart_boost
+import os
+from plugin_settings import merge_tdp_profiles, get_saved_settings, get_tdp_profile, get_active_tdp_profile, per_game_profiles_enabled, set_setting as persist_setting
+from gpu_utils import get_gpu_frequency_range
+import plugin_utils
+import migrations
+import steam_info
+import device_utils
+from devices import lenovo
+from devices import msi_claw
+import charge_limit
+import i18n
+
+class Plugin:
+
+  async def log_info(self, info):
+    decky_plugin.logger.info(info)
+
+  async def is_steam_running(self):
+    return steam_info.is_steam_running()
+
+  async def get_power_control_info(self):
+    response = {
+      'powerControlsEnabled': False,
+      "eppOptions": [],
+      "powerGovernorOptions": [],
+      "scalingDriver": '',
+      'supportsCpuBoost': False,
+      'supportsSmartBoost': False,
+      'deviceName': ''
+    }
+    try:
+      with plugin_timeout.time_limit(5):
+        pstate_status = cpu_utils.get_pstate_status()
+        response['pstateStatus'] = pstate_status
+        if pstate_status == 'passive' and device_utils.is_intel():
+          cpu_utils.set_pstate_active()
+          response['pstateStatus'] = 'active'
+
+        response['deviceName'] = device_utils.get_device_name()
+        response['supportsSmt'] = cpu_utils.supports_smt()
+        response['scalingDriver'] = cpu_utils.get_scaling_driver()
+        response['supportsCpuBoost'] = cpu_utils.supports_cpu_boost()
+        response['supportsSmartBoost'] = smart_boost.supports_smart_boost()
+        response['powerControlsEnabled'] = power_utils.power_controls_enabled()
+        if response['powerControlsEnabled']:
+          response['eppOptions'] = power_utils.get_available_epp_options()
+          response['powerGovernorOptions'] = power_utils.get_available_governor_options()
+    except Exception as e:
+      decky_plugin.logger.error(f'{__name__} get_power_control_info {e}')
+    return response
+
+  async def get_settings(self):
+    try:
+      settings = get_saved_settings()
+      try:
+        with plugin_timeout.time_limit(5):
+          settings['advancedOptions'] = advanced_options.get_advanced_options()
+
+          settings['supportsCustomAcPowerManagement'] = ac_power.supports_custom_ac_power_management()
+          settings['cpuVendor'] = device_utils.get_cpu_manufacturer()
+
+          if device_utils.is_intel():
+            # hardcode min/max TDP values for Intel
+            min_tdp, max_tdp = cpu_utils.get_intel_tdp_limits()
+            settings['maxTdp'] = max_tdp
+            settings['minTdp'] = min_tdp
+          else:
+            # firmware-declared per-device TDP range (e.g. Lenovo Legion WMI).
+            # setdefault so a user's saved custom range is not overwritten.
+            tdp_range = cpu_utils.get_default_tdp_range()
+            if tdp_range:
+              dev_min, dev_max = tdp_range
+              settings.setdefault('minTdp', dev_min)
+              settings.setdefault('maxTdp', dev_max)
+
+          gpu_min, gpu_max = get_gpu_frequency_range()
+          if (gpu_min and gpu_max):
+            settings['minGpuFrequency'] = gpu_min
+            settings['maxGpuFrequency'] = gpu_max
+      except Exception as e:
+        decky_plugin.logger.error(f"main#get_settings failed to get info {e}")
+
+      settings['systemLanguage'] = i18n.get_steam_lang()
+      settings['pluginVersionNum'] = f'{decky_plugin.DECKY_PLUGIN_VERSION}'
+      return settings
+    except Exception as e:
+      decky_plugin.logger.error(f"get_settings failed to get settings {e}")
+
+  async def set_setting(self, name: str, value):
+    try:
+      if name == "advanced":
+        advanced_options.handle_advanced_option_change(value)
+
+      return persist_setting(name, value)
+    except Exception as e:
+      decky_plugin.logger.error(f"error failed to set_setting {name}={value} {e}")
+
+  async def set_values_for_game_id(self, gameId):
+    plugin_utils.set_values_for_game_id(gameId)
+  
+  async def persist_tdp(self, tdp, gameId):
+    plugin_utils.persist_tdp(tdp, gameId)
+
+  async def persist_gpu(self, minGpuFrequency, maxGpuFrequency, gameId):
+    plugin_utils.persist_gpu(minGpuFrequency, maxGpuFrequency, gameId)
+
+  async def set_power_governor(self, powerGovernorInfo, gameId):
+    scaling_driver = powerGovernorInfo.get('scalingDriver')
+    powerGovernor = powerGovernorInfo.get('powerGovernor')
+
+    tdp_profiles = {
+      f'{gameId}': {
+        'powerControls': {
+          f'{scaling_driver}': {
+            'powerGovernor': powerGovernor
+          }
+        }
+      }
+    }
+    merge_tdp_profiles(tdp_profiles)
+
+    tdp_profile = get_tdp_profile(gameId)
+    if tdp_profile:
+      plugin_utils.set_power_governor_for_tdp_profile(tdp_profile)
+
+  async def set_epp(self, eppInfo, gameId):
+    scaling_driver = eppInfo.get('scalingDriver')
+    epp = eppInfo.get('epp')
+
+    tdp_profiles = {
+      f'{gameId}': {
+        'powerControls': {
+          f'{scaling_driver}': {
+            'epp': epp
+          }
+        }
+      }
+    }
+    merge_tdp_profiles(tdp_profiles)
+
+    tdp_profile = get_tdp_profile(gameId)
+    if tdp_profile and scaling_driver and epp:
+      plugin_utils.set_epp_for_tdp_profile(tdp_profile)
+
+  async def persist_smt(self, smt, gameId):
+      tdp_profiles = {
+          f'{gameId}': {
+              'smt': smt
+          }
+      }
+      merge_tdp_profiles(tdp_profiles)
+
+      tdp_profile = get_tdp_profile(gameId)
+
+      cpu_utils.set_smt(smt)
+      time.sleep(0.3)
+      plugin_utils.set_power_governor_for_tdp_profile(tdp_profile)
+      plugin_utils.set_cpu_boost_for_tdp_profile(tdp_profile)
+
+
+  async def on_suspend(self):
+    decky_plugin.logger.info(f'main#on_suspend started')
+    cpu_utils.set_smt(True)
+    decky_plugin.logger.info(f'main#on_suspend complete')
+
+  async def on_resume(self):
+    decky_plugin.logger.info(f'main#on_resume started')
+    if device_utils.is_legion_go():
+      lenovo.invalidate_platform_profile_cache()
+      lenovo.wait_for_wmi_ready(timeout_seconds=10)
+    decky_plugin.logger.info(f'main#on_resume complete')
+
+  async def persist_cpu_boost(self, cpuBoost, gameId, smartBoost = False):
+    tdp_profiles = {
+      f'{gameId}': {
+        'cpuBoost': cpuBoost,
+        'smartBoost': smartBoost
+      }
+    }
+    merge_tdp_profiles(tdp_profiles)
+
+    return plugin_utils.set_values_for_game_id(gameId)
+  
+  async def get_latest_version_num(self):
+    return plugin_update.get_latest_version()
+
+  async def poll_tdp(self, currentGameId: str):
+    settings = get_saved_settings()
+    tdp_profile = get_tdp_profile('default')
+
+    if settings.get('enableTdpProfiles'):
+      tdp_profile = get_tdp_profile(currentGameId) or tdp_profile
+
+    try:
+      with plugin_timeout.time_limit(3):
+        plugin_utils.set_values_for_tdp_profile(tdp_profile)
+    except Exception as e:
+      decky_plugin.logger.error(f'main#poll_tdp file timeout {e}')
+      return False
+
+    return True      
+
+  async def save_tdp(self, tdpProfiles, currentGameId, advanced):
+    try:
+      merge_tdp_profiles(tdpProfiles)
+      persist_setting('advanced', advanced)
+
+      tdp_profile = get_active_tdp_profile(currentGameId)
+
+      try:
+        with plugin_timeout.time_limit(3):
+          plugin_utils.set_values_for_tdp_profile(tdp_profile)
+      except Exception as e:
+        decky_plugin.logger.error(f'main#save_tdp file timeout {e}')
+
+    except Exception as e:
+      decky_plugin.logger.error(e)
+
+  async def set_max_tdp(self):
+    settings = get_saved_settings()
+    max_tdp = settings.get('maxTdp')
+    if (max_tdp and max_tdp > 10):
+      cpu_utils.set_tdp(max_tdp)
+
+  async def ota_update(self):
+    # trigger ota update
+    try:
+      with plugin_timeout.time_limit(15):
+        return plugin_update.ota_update()
+    except Exception as e:
+      decky_plugin.logger.error(e)
+
+  async def reset_settings(self):
+    try:
+      with plugin_timeout.time_limit(15):
+        return plugin_update.reset_settings()
+    except Exception as e:
+      decky_plugin.logger.error(e)
+
+  async def check_ryzenadj_coall(self):
+    try:
+      with plugin_timeout.time_limit(15):
+        migrations.check_ryzenadj_coall_support(force_check=True)
+        return plugin_update.restart_decky_loader()
+    except Exception as e:
+      decky_plugin.logger.error(e)
+
+  async def supports_custom_ac_power_management(self):
+    return ac_power.supports_custom_ac_power_management()
+
+  async def get_ac_power_status(self):
+    ac_power_path = ac_power.custom_ac_power_management_path()
+
+    if ac_power_path and os.path.exists(ac_power_path):
+      with open(ac_power_path, 'r') as file:
+        current_status = file.read().strip()
+        file.close()
+        return current_status
+    return None
+
+  # --- MSI Claw 8 EX AI+ specific API ---------------------------------------
+  # These two methods are what replaces the vendor console calls in the original
+  # fork. The frontend calls get_device_capabilities() to decide which controls
+  # to show, and get_battery_info() for the 80 Wh pack's percentage and health.
+  async def get_battery_info(self):
+    try:
+      return msi_claw.get_battery_info()
+    except Exception as e:
+      decky_plugin.logger.error(f'main#get_battery_info {e}')
+      return None
+
+  async def get_device_capabilities(self):
+    try:
+      return msi_claw.get_msi_center_status()
+    except Exception as e:
+      decky_plugin.logger.error(f'main#get_device_capabilities {e}')
+      return None
+
+  # Asyncio-compatible long-running code, executed in a task when the plugin is loaded
+  async def _main(self):
+    decky_plugin.logger.info("SimpleDeckyTDP-MSI-Claw Starting")
+    migrations.check_ryzenadj_coall_support()
+    if device_utils.is_msi_claw_8_ex_ai():
+      # Probe and log what the Claw's EC exposes (battery, fan, RGB, charge cap).
+      # This replaces the "ask MSI Center" calls the original fork made: MSI
+      # Center is Windows-only, so the plugin reads sysfs and documents gaps.
+      msi_claw.init()
+    if charge_limit.supports_charge_limit():
+      charge_limit.initialize_charge_limit()
+
+  # Function called first during the unload process, utilize this to handle your plugin being removed
+  async def _unload(self):
+    decky_plugin.logger.info("SimpleDeckyTDP Unloading")
+    pass
+
+  async def _uninstall(self):
+    decky_plugin.logger.info("SimpleDeckyTDP Uninstalling")
+    pass
+
+  # Migrations that should be performed before entering `_main()`.
+  async def _migration(self):
+    decky_plugin.logger.info("Migrating")
+
+    # migrations.migrate_smt()
+    # migrations.migrate_gpu_mode()
