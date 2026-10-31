@@ -942,14 +942,25 @@ step_plugin_install() {
     return 1
   fi
 
-  local tmp
+  local tmp src_dir
   tmp="$(mktemp -d)"
   if ! unzip -q "$zip" -d "$tmp" 2>/dev/null; then
     say "  [error] could not unzip $zip"; rm -rf "$tmp"; return 1
   fi
+  # The Decky CLI zip contains a top-level "SimpleDeckyTDP-MSI-Claw/" folder;
+  # a hand-made zip may be flat. Handle both so plugin.json ends up directly
+  # inside $PLUGIN_DIR, which is what Decky Loader expects.
+  if [ -f "$tmp/$PLUGIN_NAME/plugin.json" ]; then
+    src_dir="$tmp/$PLUGIN_NAME"
+  elif [ -f "$tmp/plugin.json" ]; then
+    src_dir="$tmp"
+  else
+    say "  [error] plugin.json not found in the zip; wrong archive?"
+    rm -rf "$tmp"; return 1
+  fi
   $SUDO mkdir -p "$DECKY_PLUGINS"
   $SUDO rm -rf "$PLUGIN_DIR"
-  if ! $SUDO mv "$tmp"/* "$PLUGIN_DIR" 2>/dev/null; then
+  if ! $SUDO mv "$src_dir" "$PLUGIN_DIR" 2>/dev/null; then
     say "  [error] could not move plugin into $PLUGIN_DIR"; rm -rf "$tmp"; return 1
   fi
   rm -rf "$tmp"
