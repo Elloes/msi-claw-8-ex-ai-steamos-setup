@@ -670,7 +670,7 @@ BUTTON_MAP_CONTENT=$(cat <<'EOT'
 # Confirm real evdev key codes with `evtest` on hardware first.
 M1               = Left Back Paddle       # BTN_TL  (reference LeftPaddle1)
 M2               = Right Back Paddle      # BTN_TR  (reference RightPaddle1)
-MSI Center M     = Home / Steam Menu      # KEY_HOMEPAGE
+MSI Center M     = Xbox / Guide button    # BTN_MODE (0x13c), opens Steam Menu
 Quick Settings   = Quick Access           # KEY_F13 (verify)
 Menu             = App Menu               # KEY_MENU
 View             = Game View / Screenshot # KEY_PRINT
@@ -699,7 +699,7 @@ step_button_mapping() {
       echo '# Uncomment and correct the source events, then reload inputplumber.'
       echo '#'
       echo '#   M1 -> Left Back Paddle, M2 -> Right Back Paddle,'
-      echo '#   MSI Center M -> Home/Steam Menu, Quick Settings -> Quick Access,'
+      echo '#   MSI Center M -> Xbox/Guide button, Quick Settings -> Quick Access,'
       echo '#   Menu -> App Menu, View -> Game View/Screenshot, Fingerprint -> Sleep.'
       echo '#'
       echo '#device:'
@@ -707,7 +707,7 @@ step_button_mapping() {
       echo '#  mappings:'
       echo '#    - { source: "key:BTN_TL", target: "button:left_paddle" }'
       echo '#    - { source: "key:BTN_TR", target: "button:right_paddle" }'
-      echo '#    - { source: "key:KEY_HOMEPAGE", target: "button:guide" }'
+      echo '#    - { source: "btn:BTN_MODE", target: "button:guide" }'
       echo '#    - { source: "key:KEY_F13", target: "button:quick_access" }'
       echo '#    - { source: "key:KEY_MENU", target: "button:menu" }'
       echo '#    - { source: "key:KEY_PRINT", target: "button:screenshot" }'
