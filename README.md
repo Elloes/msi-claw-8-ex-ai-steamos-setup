@@ -2,7 +2,7 @@
 
 SimpleDeckyTDP-MSI-Claw is a fork of [aarron-lee/SimpleDeckyTDP](https://github.com/aarron-lee/SimpleDeckyTDP) for the **MSI Claw 8 EX AI+** (Intel Panther Lake, Arc B390 "Xe3", model CG3EM), installed as its own Decky plugin. It is based on upstream 1.0.7 and keeps upstream's BSD 3-Clause license. It is not affiliated with or endorsed by upstream or MSI. The current release is 1.0.7+claw8ex.1.
 
-**Primary target: CachyOS Handheld Edition.** SteamOS and Bazzite are also supported. Anatase OS is not a distribution this project has tested; the fix pack falls back to its "unknown distro" branch there (portable fixes only, no package-manager automation).
+**Primary targets: CachyOS Handheld Edition and Anatase OS.** SteamOS and Bazzite are also supported. Anatase OS has its own distro profile in the fix pack: it probes for pacman/apt-get/dnf so the firmware install works whether the base is Arch or Debian, and it uses the bundled DMC blob without a manual copy. The base of Anatase OS is not documented in this repo, so treat that branch as portable-and-probed rather than hardware-validated.
 
 ## What this port changes
 
@@ -67,7 +67,8 @@ The script detects the distro and adapts:
 | **CachyOS Handheld Edition** | `pacman -S linux-firmware-intel` | writable `/`, no remount |
 | SteamOS 3.x | `pacman` + `steamos-readonly disable` | read-only `/usr` |
 | Bazzite / Fedora Atomic | `rpm-ostree` instructions (no auto-layer) | immutable `/usr` |
-| Anatase OS / unknown | manual instructions printed | portable fixes only |
+| **Anatase OS** | probes `pacman`, then `apt-get`, then `dnf` | writable `/` assumed; portable fixes always |
+| Other / unknown | manual instructions printed | portable fixes only |
 
 It refuses to run when the DMI does not look like a Claw 8 EX AI+. Override with
 `--force` or `MSI_CLAW_FORCE_DMI=1` if your unit reports another string.
@@ -113,9 +114,14 @@ If PPD is active and overriding limits, disable it or set its profile to
 `performance` before using the plugin.
 
 ### VRR stays capped / refresh drops
-The DMC v2.20 blob must be present. Run `./fixpack/msi-claw-apply-fixes.sh --check`
-and confirm the DMC step reports "present". The blob ships in the release archive
-under `firmware/`; place it at `~/.cache/msi-claw-fix/xe3lpd_dmc.bin.zst`.
+The DMC v2.20 blob now **ships inside this repo** at
+`fixpack/firmware/xe3lpd_dmc.bin.zst` (sha256 `150eaa60…`). The fix pack looks
+there first and installs it automatically, so no manual copy is needed when you
+run the script from the cloned repo. If you copied the script elsewhere without
+the `firmware/` folder, either keep the folder next to the script or place the
+blob at `~/.cache/msi-claw-fix/xe3lpd_dmc.bin.zst`. Run
+`./fixpack/msi-claw-apply-fixes.sh --check` and confirm the DMC step reports the
+override as present.
 
 ### Volume keys run to 0 or 100
 The key-up fix service is installed by the fix pack. Check:

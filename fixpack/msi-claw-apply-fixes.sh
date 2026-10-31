@@ -38,6 +38,11 @@
 
 set -u
 
+# Directory this script lives in. The DMC blob and its license ship next to the
+# script under firmware/, so the fix pack works from a cloned repo without the
+# user having to copy the blob into ~/.cache first.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 MSI_CLAW_FIXES_VERSION="1.0.0-claw8ex"
 
 # ---- device guard ----------------------------------------------------------
@@ -153,6 +158,11 @@ detect_distro() {
     steamos) echo steamos; return ;;
     bazzite) echo bazzite; return ;;
     cachyos) echo cachyos; return ;;
+    anatase) echo anatase; return ;;
+  esac
+  # Anatase OS may not set ID=anatase; catch its branding string too.
+  case "$id" in
+    *anatase*) echo anatase; return ;;
   esac
   case " $like " in
     *" arch "*) echo arch; return ;;
@@ -170,6 +180,7 @@ case "$DISTRO" in
   steamos) DISTRO_LABEL="SteamOS" ;;
   bazzite) DISTRO_LABEL="Bazzite (Fedora Atomic)" ;;
   cachyos) DISTRO_LABEL="CachyOS Handheld Edition" ;;
+  anatase) DISTRO_LABEL="Anatase OS" ;;
   arch) DISTRO_LABEL="Arch-family" ;;
   fedora) DISTRO_LABEL="Fedora-family" ;;
   *) DISTRO_LABEL="unknown distro" ;;
@@ -209,6 +220,24 @@ install_firmware_package() {
       say "  [info] Fedora Atomic detected. Run 'rpm-ostree upgrade' and reboot first."
       say "  [info] If firmware is still missing: sudo rpm-ostree install linux-firmware"
       say "  [info] then reboot. This script does not layer packages automatically."
+      return 1
+      ;;
+    anatase)
+      # Anatase OS: base is not documented in this repo. Probe the package
+      # manager so the firmware install works on either an Arch or Debian base.
+      if command -v pacman >/dev/null 2>&1; then
+        $SUDO pacman -Sy --noconfirm "$pkg" 2>&1 | tail -n5
+        return ${PIPESTATUS[0]}
+      elif command -v apt-get >/dev/null 2>&1; then
+        $SUDO apt-get update 2>&1 | tail -n2
+        $SUDO apt-get install -y "$pkg" 2>&1 | tail -n5
+        return ${PIPESTATUS[0]}
+      elif command -v dnf >/dev/null 2>&1; then
+        $SUDO dnf install -y "$pkg" 2>&1 | tail -n5
+        return ${PIPESTATUS[0]}
+      fi
+      say "  [info] Anatase OS: no pacman/apt-get/dnf found; install the Intel"
+      say "  [info] Wi-Fi 7 firmware manually and re-run --check."
       return 1
       ;;
     *)
@@ -315,10 +344,16 @@ step_dmc_firmware() {
     return 0
   fi
 
-  local blob="$CACHE_DIR/xe3lpd_dmc.bin.zst"
+  # The blob ships next to this script in firmware/ so a cloned repo works out
+  # of the box. Fall back to the cache dir for users who fetched it separately.
+  local blob="$SCRIPT_DIR/firmware/xe3lpd_dmc.bin.zst"
   if [ ! -f "$blob" ]; then
-    say "  [action needed] place the v2.20 blob at $blob"
-    say "  It ships in this project's release archive under firmware/."
+    blob="$CACHE_DIR/xe3lpd_dmc.bin.zst"
+  fi
+  if [ ! -f "$blob" ]; then
+    say "  [action needed] place the v2.20 blob at either:"
+    say "    $SCRIPT_DIR/firmware/xe3lpd_dmc.bin.zst  (ships with the repo)"
+    say "    $CACHE_DIR/xe3lpd_dmc.bin.zst          (manual copy)"
     say "  Expected sha256: $DMC_SHA256"
     return 1
   fi
