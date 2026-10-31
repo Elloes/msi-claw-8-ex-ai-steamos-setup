@@ -3,7 +3,7 @@
 # MSI Claw 8 EX AI+ (Panther Lake / Arc B390 "Xe3", model CG3EM).
 #
 # Usage:
-#   curl -L https://raw.githubusercontent.com/JaelTanalepy/msi-claw-8-ex-ai-steamos-setup/main/install.sh | sh
+#   curl -L https://raw.githubusercontent.com/Elloes/msi-claw-8-ex-ai-steamos-setup/main/install.sh | sh
 #   VERSION=1.0.7+claw8ex.1 ./install.sh
 #
 # The plugin directory must match plugin.json's "name" (SimpleDeckyTDP-MSI-Claw)
@@ -11,7 +11,7 @@
 
 VERSION=${VERSION:-"LATEST"}
 PLUGIN_NAME="SimpleDeckyTDP-MSI-Claw"
-GITHUB_OWNER="JaelTanalepy"
+GITHUB_OWNER="Elloes"
 GITHUB_REPO="msi-claw-8-ex-ai-steamos-setup"
 
 

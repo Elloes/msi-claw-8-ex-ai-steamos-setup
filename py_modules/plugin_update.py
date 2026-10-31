@@ -13,7 +13,7 @@ from plugin_settings import settings_path
 # original URL into a repository that does not exist, so the OTA updater would
 # 404 until these are filled in. Keeping them as constants means there is only
 # one place to change.
-GITHUB_OWNER = "JaelTanalepy"
+GITHUB_OWNER = "Elloes"
 GITHUB_REPO = "msi-claw-8-ex-ai-steamos-setup"
 
 API_URL = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"

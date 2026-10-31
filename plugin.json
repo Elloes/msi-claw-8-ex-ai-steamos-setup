@@ -1,11 +1,11 @@
 {
   "name": "SimpleDeckyTDP-MSI-Claw",
-  "author": "Aarron Lee; MSI Claw 8 EX AI+ port maintained by JaelTanalepy",
+  "author": "Aarron Lee; MSI Claw 8 EX AI+ port maintained by Elloes",
   "flags": ["root"],
   "api_version": 1,
   "publish": {
     "tags": ["tdp", "root", "msi", "claw", "panther-lake"],
     "description": "TDP, EPP, CPU boost and charge-limit control for the MSI Claw 8 EX AI+ (Panther Lake / Arc B390 Xe3, model CG3EM), 8-35 W envelope",
-    "image": "https://raw.githubusercontent.com/JaelTanalepy/msi-claw-8-ex-ai-steamos-setup/main/img/plugin-image.jpg"
+    "image": "https://raw.githubusercontent.com/Elloes/msi-claw-8-ex-ai-steamos-setup/main/img/plugin-image.jpg"
   }
 }

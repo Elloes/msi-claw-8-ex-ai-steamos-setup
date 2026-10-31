@@ -46,7 +46,7 @@ The fix pack applies the firmware, display, split-lock and power fixes that a
 plain plugin cannot. Run it once per OS image update:
 
 ```bash
-git clone https://github.com/JaelTanalepy/msi-claw-8-ex-ai-steamos-setup.git
+git clone https://github.com/Elloes/msi-claw-8-ex-ai-steamos-setup.git
 cd msi-claw-8-ex-ai-steamos-setup
 chmod +x fixpack/msi-claw-apply-fixes.sh
 
@@ -80,14 +80,21 @@ already installed. On SteamOS use the Decky installer. Then, from Desktop Mode o
 over SSH:
 
 ```bash
-curl -L -o /tmp/simpledeckytdp-msi-claw.zip https://github.com/JaelTanalepy/msi-claw-8-ex-ai-steamos-setup/releases/latest/download/simpledeckytdp-msi-claw.zip
+# Grab the prebuilt zip that is committed in this repo (works without releases):
+curl -L -o /tmp/simpledeckytdp-msi-claw.zip https://github.com/Elloes/msi-claw-8-ex-ai-steamos-setup/raw/main/fixpack/simpledeckytdp-msi-claw.zip
 sudo rm -rf ~/homebrew/plugins/SimpleDeckyTDP-MSI-Claw
 sudo unzip -o /tmp/simpledeckytdp-msi-claw.zip -d ~/homebrew/plugins
 sudo systemctl restart plugin_loader 2>/dev/null || sudo systemctl restart decky-loader
 ```
 
-The plugin shows up in Decky as **SimpleDeckyTDP-MSI-Claw**. The zip is on the
-[releases page](https://github.com/JaelTanalepy/msi-claw-8-ex-ai-steamos-setup/releases).
+The plugin shows up in Decky as **SimpleDeckyTDP-MSI-Claw**. If you cloned the
+repo, the fix pack's plugin-install step does this for you and uses the same
+committed zip.
+
+> **Auto-update:** the plugin's in-app updater follows this fork's GitHub
+> *releases*. No release is published yet, so "Update to ..." will find nothing
+> until you push a version tag (the `.github/workflows/release.yml` workflow
+> builds and publishes on `v*.*.*` tags).
 
 ### 3. Set TDP after reboot
 
@@ -138,7 +145,7 @@ rather than writing unknown EC/HID values. See "Known limitations" above.
 You need Node.js, pnpm and jq.
 
 ```bash
-git clone https://github.com/JaelTanalepy/msi-claw-8-ex-ai-steamos-setup.git
+git clone https://github.com/Elloes/msi-claw-8-ex-ai-steamos-setup.git
 cd msi-claw-8-ex-ai-steamos-setup
 ./scripts/build_i18n_json.sh
 pnpm install
